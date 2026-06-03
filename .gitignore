@@ -1,0 +1,24 @@
+# Data (raw + processed) — do not commit large fetched datasets
+data/*
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env
+
+# HTTP cache
+.http_cache/
+*.sqlite
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+.ipynb_checkpoints/

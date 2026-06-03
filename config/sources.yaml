@@ -1,0 +1,93 @@
+# Per-source configuration. `enabled: false` skips the source in `fetch all`.
+# tier: A = full programmatic history >=2020, B = programmatic, limited history,
+#       C = scraping / collect-from-now.
+
+open_meteo:
+  enabled: true
+  tier: A
+  # ERA5 reanalysis hourly variables
+  hourly:
+    - temperature_2m
+    - relative_humidity_2m
+    - precipitation
+    - rain
+    - snowfall
+    - surface_pressure
+    - cloud_cover
+    - wind_speed_10m
+    - wind_direction_10m
+    - wind_gusts_10m
+    - soil_moisture_0_to_7cm
+    - soil_temperature_0_to_7cm
+
+gios_air:
+  enabled: true
+  tier: A
+  # nearest stations resolved by distance to centroid; how many to keep
+  max_stations: 3
+  search_radius_km: 30
+
+gus_bdl:
+  enabled: true
+  tier: A
+  # subject areas (variable groups) to pull; resolved to variable ids at runtime
+  # keep small by default; extend in DATA_SOURCES.md
+  variable_ids: []   # empty => fetch a curated default set (see source module)
+
+osm_overpass:
+  enabled: true
+  tier: A
+  overpass_url: "https://overpass-api.de/api/interpreter"
+  # POI / feature categories to extract within the gmina boundary
+  features:
+    - "amenity"
+    - "shop"
+    - "highway"
+    - "building"
+    - "waterway"
+    - "landuse"
+    - "natural"
+
+imgw_warnings:
+  enabled: true
+  tier: A
+  base_meteo: "https://danepubliczne.imgw.pl/data/arch/ost_meteo"
+  base_hydro: "https://danepubliczne.imgw.pl/data/arch/ost_hydro"
+
+imgw_meteo:
+  enabled: true
+  tier: A
+  base: "https://danepubliczne.imgw.pl/data/dane_pomiarowo_obserwacyjne"
+  # nearest IMGW stations (klimat/synop) to Kozy
+  station_names: ["BIELSKO-BIAŁA", "PSZCZYNA", "ŻYWIEC"]
+  kind: "klimat"   # klimat | synop | opad
+
+imgw_hydro:
+  enabled: false
+  tier: B
+
+psp_events:
+  enabled: false
+  tier: B
+
+sewik_accidents:
+  enabled: false
+  tier: B
+
+gugik:
+  enabled: false
+  tier: B
+
+rcb_alerts:
+  enabled: true
+  tier: C
+  base: "https://www.gov.pl/web/rcb"
+
+tauron_outages:
+  enabled: false
+  tier: C
+
+kozy_news:
+  enabled: true
+  tier: C
+  base: "https://kozy.pl/aktualnosci/"

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kozy-data"
+version = "0.1.0"
+description = "Spatio-temporal data acquisition for gmina Kozy (powiat bielski) for GNN experiments"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "pyyaml>=6.0",
+    "shapely>=2.0",
+    "beautifulsoup4>=4.12",
+    "lxml>=4.9",
+]
+
+[project.optional-dependencies]
+geo = ["geopandas>=0.14", "owslib>=0.29", "pyproj>=3.6"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+kozy-data = "kozy_data.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+kozy_data = ["py.typed"]

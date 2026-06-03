@@ -1,0 +1,21 @@
+# Area of interest: gmina Kozy, powiat bielski, woj. śląskie
+name: Kozy
+teryt_gmina: "2402072"   # TERC of gmina Kozy
+teryt_powiat: "2402"     # powiat bielski
+teryt_woj: "24"          # woj. śląskie
+
+# Centroid (approx., 49°50'42"N 19°08'30"E). Refined from boundary once fetched.
+centroid:
+  lat: 49.845
+  lon: 19.142
+
+# Fallback bbox (min/max). Overwritten by computed bbox from boundary geometry.
+bbox:
+  min_lat: 49.795
+  min_lon: 19.060
+  max_lat: 49.890
+  max_lon: 19.205
+
+# Default temporal range for all downloaders
+date_start: "2020-01-01"
+timezone: "Europe/Warsaw"
