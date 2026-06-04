@@ -19,8 +19,9 @@ log = logging.getLogger("kozy_data.bdl")
 
 BASE = "https://bdl.stat.gov.pl/api/v1"
 # Sensible default variables (override via config/sources.yaml: gus_bdl.variable_ids).
-# 72305 = ludność ogółem (stan na 31 XII).
-DEFAULT_VARS = [72305]
+# 72305 = ludność ogółem; 60559 = gęstość zaludnienia; 60562/60563 = obciążenie dem.;
+# 60565-60567 = grupy wieku; 60572/60573 = pow. mieszkań.
+DEFAULT_VARS = [72305, 60559, 60562, 60563, 60565, 60566, 60567, 60572, 60573]
 
 
 class GusBdlDownloader(BaseDownloader):

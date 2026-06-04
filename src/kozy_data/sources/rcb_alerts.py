@@ -1,8 +1,8 @@
 """RCB alerts -- best-effort scraper of gov.pl/web/rcb news.
 
-RCB exposes no public API and no clean per-powiat history, so this collects
-article links/titles/dates and keeps items referencing śląskie / bielski / Kozy.
-Best used in forward-collection mode (run periodically).
+RCB exposes no public API. The index page lists recent alerts in <li> elements
+with dates in DD.MM.YYYY format preceding the title. Items are filtered to those
+referencing śląskie / bielski / weather events.
 
 Output: timestamp, lat, lon, category, title, url, source.
 """
@@ -20,8 +20,12 @@ from .. import http, io
 
 log = logging.getLogger("kozy_data.rcb")
 
-KEYWORDS = ("bielski", "bielsko", "śląski", "slaski", "kozy", "ostrzeż", "alert")
-DATE_RE = re.compile(r"(20\d{2})[-.](\d{2})[-.](\d{2})")
+KEYWORDS = ("bielski", "bielsko", "śląski", "slaski", "kozy", "ostrzeż", "alert", "burz",
+            "wiatr", "powódź", "pożar", "upał", "mróz", "śnieg")
+# RCB dates appear as DD.MM.YYYY at the start of <li> item text
+DATE_RE_PL = re.compile(r"(\d{2})\.(\d{2})\.(20\d{2})")
+# Fallback ISO pattern for future-proofing
+DATE_RE_ISO = re.compile(r"(20\d{2})[-.](\d{2})[-.](\d{2})")
 
 
 class RcbAlertsDownloader(BaseDownloader):
@@ -32,28 +36,46 @@ class RcbAlertsDownloader(BaseDownloader):
         base = self.cfg.get("base", "https://www.gov.pl/web/rcb")
         try:
             html = http.get(base, use_cache=False, timeout=60).text
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return FetchResult(self.name, 0, note=f"fetch failed: {exc}")
         io.save_raw_bytes(self.name, "rcb_index.html", html.encode("utf-8"))
         soup = BeautifulSoup(html, "html.parser")
         rows = []
-        for a in soup.find_all("a", href=True):
+        seen_urls: set[str] = set()
+        for li in soup.find_all("li"):
+            a = li.find("a", href=True)
+            if not a:
+                continue
             title = a.get_text(strip=True)
             href = a["href"]
-            text = f"{title} {href}".lower()
-            if not title or not any(k in text for k in KEYWORDS):
+            if not title or not href:
                 continue
-            dm = DATE_RE.search(href) or DATE_RE.search(title)
-            ts = f"{dm.group(1)}-{dm.group(2)}-{dm.group(3)}" if dm else None
+            text = li.get_text(" ", strip=True)
+            text_lower = f"{title} {href} {text}".lower()
+            if not any(k in text_lower for k in KEYWORDS):
+                continue
+            # Extract date: prefer DD.MM.YYYY from item text (RCB page format)
+            dm = DATE_RE_PL.search(text)
+            if dm:
+                ts = f"{dm.group(3)}-{dm.group(2)}-{dm.group(1)}"
+            else:
+                dm2 = DATE_RE_ISO.search(href) or DATE_RE_ISO.search(title)
+                ts = f"{dm2.group(1)}-{dm2.group(2)}-{dm2.group(3)}" if dm2 else None
+            if not ts:
+                continue
+            url = urljoin(base, href)
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
             rows.append({
                 "timestamp": ts,
                 "lat": self.aoi.centroid_lat, "lon": self.aoi.centroid_lon,
                 "category": "rcb_alert", "title": title[:300],
-                "url": urljoin(base, href), "source": self.name,
+                "url": url, "source": self.name,
             })
         if not rows:
             return FetchResult(self.name, 0, note="no matching RCB items on index page")
-        df = pd.DataFrame(rows).drop_duplicates(subset=["url"])
+        df = pd.DataFrame(rows)
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
         return self.emit(df, "rcb_alerts", urls=[base],
                          note="best-effort scrape; run periodically to accumulate")

@@ -30,9 +30,15 @@ gios_air:
 gus_bdl:
   enabled: true
   tier: A
-  # subject areas (variable groups) to pull; resolved to variable ids at runtime
-  # keep small by default; extend in DATA_SOURCES.md
-  variable_ids: []   # empty => fetch a curated default set (see source module)
+  # BDL variable IDs available at gmina level (level 6).
+  # 72305 = ludność ogółem
+  # 60559 = gęstość zaludnienia (os/km2)
+  # 60562 = obciążenie dem. poprodukcyjni/100 produkcyjnych
+  # 60563 = obciążenie dem. nieprodukcyjni/100 produkcyjnych
+  # 60565/60566/60567 = ludność wg grup wieku (poprodukcyjny/produkcyjny/przedprodukcyjny)
+  # 60572 = przeciętna pow. użytkowa 1 mieszkania (m2)
+  # 60573 = przeciętna pow. użytkowa mieszkania na 1 osobę (m2)
+  variable_ids: [72305, 60559, 60562, 60563, 60565, 60566, 60567, 60572, 60573]
 
 osm_overpass:
   enabled: true
@@ -58,8 +64,9 @@ imgw_meteo:
   enabled: true
   tier: A
   base: "https://danepubliczne.imgw.pl/data/dane_pomiarowo_obserwacyjne"
-  # nearest IMGW stations (klimat/synop) to Kozy
-  station_names: ["BIELSKO-BIAŁA", "PSZCZYNA", "ŻYWIEC"]
+  # For kind=klimat only PSZCZYNA (~18 km) exists in this region.
+  # BIELSKO-BIAŁA and ŻYWIEC require kind=synop (different archive path).
+  station_names: ["PSZCZYNA"]
   kind: "klimat"   # klimat | synop | opad
 
 imgw_hydro:

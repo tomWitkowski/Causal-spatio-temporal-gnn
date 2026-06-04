@@ -1,10 +1,10 @@
-"""GIOŚ air-quality: nearest stations + measurements via the public REST API.
+"""GIOŚ air-quality: nearest stations + measurements via the public REST API v1.
 
 The live API serves recent measurements (good for forward collection and station
 geo-metadata). Full history back to 2020 is in the GIOŚ "Bank danych pomiarowych"
-yearly archive files -- see docs/DATA_SOURCES.md (#6) for the archive route.
+yearly archive files.
 
-Long-format output: timestamp, lat, lon, station_id, station, variable, value, source.
+Long-format output: timestamp, lat, lon, station_id, station, variable, value, unit, source.
 """
 from __future__ import annotations
 
@@ -18,8 +18,33 @@ from .. import http
 
 log = logging.getLogger("kozy_data.gios")
 
-# Legacy REST API (stable, simple JSON). v1 exists at /v1/rest/... with Polish keys.
-BASE = "https://api.gios.gov.pl/pjp-api/rest"
+BASE = "https://api.gios.gov.pl/pjp-api/v1/rest"
+
+# v1 API uses Polish key names
+_ST_ID = "Identyfikator stacji"
+_ST_LAT = "WGS84 φ N"
+_ST_LON = "WGS84 λ E"
+_ST_NAME = "Nazwa stacji"
+_SENSOR_ID = "Identyfikator stanowiska"
+_SENSOR_CODE = "Wskaźnik - wzór"
+_DATA_LIST = "Lista danych pomiarowych"
+_DATA_DATE = "Data"
+_DATA_VAL = "Wartość"
+
+
+def _get_all_pages(url: str, list_key: str, **kwargs) -> list[dict]:
+    """Fetch all pages from a paginated v1 endpoint."""
+    out = []
+    page = 0
+    while True:
+        params = {**kwargs.get("params", {}), "page": page, "size": 500}
+        data = http.get_json(url, params=params, timeout=60)
+        items = data.get(list_key, [])
+        out.extend(items)
+        if page >= data.get("totalPages", 1) - 1:
+            break
+        page += 1
+    return out
 
 
 class GiosAirDownloader(BaseDownloader):
@@ -27,13 +52,17 @@ class GiosAirDownloader(BaseDownloader):
     license = "GIOŚ Państwowy Monitoring Środowiska (open, attribution)"
 
     def _nearest_stations(self) -> list[dict]:
-        stations = http.get_json(f"{BASE}/station/findAll", timeout=120)
+        all_stations = _get_all_pages(
+            f"{BASE}/station/findAll",
+            "Lista stacji pomiarowych",
+        )
         radius = float(self.cfg.get("search_radius_km", 30))
         max_n = int(self.cfg.get("max_stations", 3))
         scored = []
-        for st in stations:
+        for st in all_stations:
             try:
-                lat = float(st["gegrLat"]); lon = float(st["gegrLon"])
+                lat = float(st[_ST_LAT])
+                lon = float(st[_ST_LON])
             except (KeyError, TypeError, ValueError):
                 continue
             d = haversine_km(lat, lon, self.aoi.centroid_lat, self.aoi.centroid_lon)
@@ -42,9 +71,30 @@ class GiosAirDownloader(BaseDownloader):
         scored.sort(key=lambda x: x[0])
         out = []
         for d, lat, lon, st in scored[:max_n]:
-            out.append({"id": st["id"], "name": st.get("stationName"),
+            out.append({"id": st[_ST_ID], "name": st.get(_ST_NAME),
                         "lat": lat, "lon": lon, "dist_km": round(d, 2)})
         return out
+
+    def _sensor_data(self, sensor_id: int) -> list[dict]:
+        """Fetch measurement data for one sensor; returns [] for manual sensors."""
+        try:
+            data = http.get_json(f"{BASE}/data/getData/{sensor_id}",
+                                 use_cache=False, timeout=60)
+        except Exception as exc:
+            # 400 = manual sensor (results released with 4-8 week delay); skip silently
+            log.debug("sensor %s unavailable: %s", sensor_id, exc)
+            return []
+        rows = data.get(_DATA_LIST, [])
+        # Collect additional pages if any
+        total = data.get("totalPages", 1)
+        for page in range(1, total):
+            try:
+                extra = http.get_json(f"{BASE}/data/getData/{sensor_id}",
+                                      params={"page": page}, use_cache=False, timeout=60)
+                rows.extend(extra.get(_DATA_LIST, []))
+            except Exception:
+                break
+        return rows
 
     def run(self, since=None) -> FetchResult:
         stations = self._nearest_stations()
@@ -52,20 +102,26 @@ class GiosAirDownloader(BaseDownloader):
             return FetchResult(self.name, 0, note="no stations within radius")
         rows = []
         for st in stations:
-            sensors = http.get_json(f"{BASE}/station/sensors/{st['id']}", timeout=60)
-            for sensor in sensors:
-                sid = sensor["id"]
-                code = sensor.get("param", {}).get("paramCode")
-                data = http.get_json(f"{BASE}/data/getData/{sid}", timeout=60,
-                                     use_cache=False)
-                for v in data.get("values", []):
-                    if v.get("value") is None:
+            try:
+                sensors = http.get_json(f"{BASE}/station/sensors/{st['id']}", timeout=60)
+            except Exception as exc:
+                log.warning("sensors fetch failed for station %s: %s", st["id"], exc)
+                continue
+            sensor_list = sensors.get("Lista stanowisk pomiarowych dla podanej stacji", [])
+            for sensor in sensor_list:
+                sid = sensor.get(_SENSOR_ID)
+                code = sensor.get(_SENSOR_CODE)
+                if not sid:
+                    continue
+                for v in self._sensor_data(sid):
+                    val = v.get(_DATA_VAL)
+                    if val is None:
                         continue
                     rows.append({
-                        "timestamp": v["date"],
+                        "timestamp": v.get(_DATA_DATE),
                         "lat": st["lat"], "lon": st["lon"],
                         "station_id": st["id"], "station": st["name"],
-                        "variable": code, "value": v["value"],
+                        "variable": code, "value": val,
                         "unit": "ug/m3", "source": self.name,
                     })
         if not rows:
