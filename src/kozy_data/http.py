@@ -64,9 +64,14 @@ def get(
     timeout: int = 60,
     use_cache: bool = True,
     rate_limit: float = 0.0,
+    session_: requests.Session | None = None,
     **kwargs: Any,
 ) -> requests.Response:
-    """GET with optional file cache keyed by url+params and a polite delay."""
+    """GET with optional file cache keyed by url+params and a polite delay.
+
+    Pass ``session_`` to use a custom session (e.g. one with fewer retries for a
+    flaky/slow API so a hanging request fails fast instead of retrying for minutes).
+    """
     cache_key = url + "?" + json.dumps(params or {}, sort_keys=True)
     cache_file = _cache_path(cache_key)
     if use_cache and cache_file.exists():
@@ -80,7 +85,7 @@ def get(
     if rate_limit:
         time.sleep(rate_limit)
     log.info("GET %s params=%s", url, params)
-    resp = session().get(url, params=params, timeout=timeout, **kwargs)
+    resp = (session_ or session()).get(url, params=params, timeout=timeout, **kwargs)
     resp.raise_for_status()
     if use_cache:
         cache_file.write_bytes(resp.content)

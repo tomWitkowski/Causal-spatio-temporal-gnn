@@ -14,11 +14,18 @@ import pandas as pd
 
 from ..base import BaseDownloader, FetchResult
 from ..geo import haversine_km
+from ..config import PROCESSED_DIR
 from .. import http
 
 log = logging.getLogger("kozy_data.gios")
 
 BASE = "https://api.gios.gov.pl/pjp-api/v1/rest"
+
+# GIOŚ getData is slow and flaky; use a fail-fast session (1 retry, short timeout)
+# so a hanging sensor is skipped rather than retried for minutes. The source
+# accumulates across runs, so a sensor missed this time is picked up next time.
+_FAST = http.make_session(total_retries=1, backoff=0.5)
+_SENSOR_TIMEOUT = 25
 
 # v1 API uses Polish key names
 _ST_ID = "Identyfikator stacji"
@@ -76,24 +83,29 @@ class GiosAirDownloader(BaseDownloader):
         return out
 
     def _sensor_data(self, sensor_id: int) -> list[dict]:
-        """Fetch measurement data for one sensor; returns [] for manual sensors."""
-        try:
-            data = http.get_json(f"{BASE}/data/getData/{sensor_id}",
-                                 use_cache=False, timeout=60)
-        except Exception as exc:
-            # 400 = manual sensor (results released with 4-8 week delay); skip silently
-            log.debug("sensor %s unavailable: %s", sensor_id, exc)
-            return []
-        rows = data.get(_DATA_LIST, [])
-        # Collect additional pages if any
-        total = data.get("totalPages", 1)
-        for page in range(1, total):
+        """Fetch recent measurements for one sensor; returns [] for manual sensors.
+
+        A large page size collapses the API's recent window into a single request
+        (the default page size is tiny and would otherwise mean hundreds of slow
+        calls per sensor). The source accumulates across runs, so only the recent
+        window is needed each time.
+        """
+        rows: list[dict] = []
+        page = 0
+        while True:
             try:
-                extra = http.get_json(f"{BASE}/data/getData/{sensor_id}",
-                                      params={"page": page}, use_cache=False, timeout=60)
-                rows.extend(extra.get(_DATA_LIST, []))
-            except Exception:
+                data = http.get_json(f"{BASE}/data/getData/{sensor_id}",
+                                     params={"size": 500, "page": page},
+                                     use_cache=False, timeout=_SENSOR_TIMEOUT,
+                                     session_=_FAST)
+            except Exception as exc:
+                # 400 = manual sensor (released with weeks' delay); skip silently
+                log.debug("sensor %s page %d unavailable: %s", sensor_id, page, exc)
                 break
+            rows.extend(data.get(_DATA_LIST, []))
+            if page >= data.get("totalPages", 1) - 1:
+                break
+            page += 1
         return rows
 
     def run(self, since=None) -> FetchResult:
@@ -129,5 +141,13 @@ class GiosAirDownloader(BaseDownloader):
         df = pd.DataFrame(rows)
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
         df = df.dropna(subset=["timestamp"])
+
+        existing_path = PROCESSED_DIR / "gios_air_measurements.parquet"
+        if existing_path.exists():
+            existing = pd.read_parquet(existing_path)
+            df = pd.concat([existing, df], ignore_index=True)
+            df = df.drop_duplicates(subset=["timestamp", "station_id", "variable"])
+
+        df = df.sort_values(["station_id", "variable", "timestamp"]).reset_index(drop=True)
         return self.emit(df, "gios_air_measurements", urls=[BASE],
-                         note=f"{len(stations)} stations (recent API window)")
+                         note=f"{len(stations)} stations (accumulated)")

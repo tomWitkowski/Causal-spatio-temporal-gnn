@@ -16,6 +16,7 @@ import pandas as pd
 from bs4 import BeautifulSoup
 
 from ..base import BaseDownloader, FetchResult
+from ..config import PROCESSED_DIR
 from .. import http, io
 
 log = logging.getLogger("kozy_data.kozy_news")
@@ -104,7 +105,15 @@ class KozyNewsDownloader(BaseDownloader):
             rows = self._from_html(base)
         if not rows:
             return FetchResult(self.name, 0, note="no items parsed (check site layout)")
-        df = pd.DataFrame(rows).drop_duplicates(subset=["url"]).reset_index(drop=True)
+        df = pd.DataFrame(rows)
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+
+        existing_path = PROCESSED_DIR / "kozy_news.parquet"
+        if existing_path.exists():
+            existing = pd.read_parquet(existing_path)
+            df = pd.concat([existing, df], ignore_index=True)
+
+        df = df.drop_duplicates(subset=["url"]).sort_values("timestamp", ascending=False)
+        df = df.reset_index(drop=True)
         return self.emit(df, "kozy_news", urls=[rss_url],
-                         note="RSS feed of municipal news")
+                         note="RSS feed of municipal news (accumulated)")

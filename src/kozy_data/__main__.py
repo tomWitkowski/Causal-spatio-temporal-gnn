@@ -42,8 +42,16 @@ def _run_one(name: str, since: str | None) -> bool:
 def cmd_list(_: argparse.Namespace) -> int:
     for name in available():
         flag = "on " if _enabled(name) else "off"
-        tier = load_sources().get(name, {}).get("tier", "?")
-        print(f"  [{flag}] tier {tier}  {name}")
+        print(f"  [{flag}]  {name}")
+    return 0
+
+
+def cmd_build_graph(args: argparse.Namespace) -> int:
+    from .graph import build
+
+    spec = build(since=args.since)
+    print(f"  OK  graph: {spec['n_nodes']} nodes, edges={spec['n_edges']}, "
+          f"dynamic features={spec['dynamic_features']}")
     return 0
 
 
@@ -72,6 +80,12 @@ def main(argv: list[str] | None = None) -> int:
     p_fetch.add_argument("source", help="source name or 'all'")
     p_fetch.add_argument("--since", default=None, help="ISO date, e.g. 2020-01-01")
     p_fetch.set_defaults(func=cmd_fetch)
+
+    p_graph = sub.add_parser("build-graph",
+                             help="assemble the spatio-temporal graph from fetched data")
+    p_graph.add_argument("--since", default=None,
+                         help="dynamic-feature start date (default: config date_start)")
+    p_graph.set_defaults(func=cmd_build_graph)
 
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)

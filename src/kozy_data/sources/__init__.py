@@ -17,10 +17,12 @@ log = logging.getLogger("kozy_data.sources")
 # name -> "module:ClassName"
 REGISTRY: dict[str, str] = {
     "osm_overpass": "kozy_data.sources.osm_overpass:OSMOverpassDownloader",
+    "spatial_grid": "kozy_data.sources.spatial_grid:SpatialGridDownloader",
     "open_meteo": "kozy_data.sources.open_meteo:OpenMeteoDownloader",
     "gios_air": "kozy_data.sources.gios_air:GiosAirDownloader",
     "gus_bdl": "kozy_data.sources.gus_bdl:GusBdlDownloader",
     "imgw_warnings": "kozy_data.sources.imgw_warnings:ImgwWarningsDownloader",
+    "meteoalarm": "kozy_data.sources.meteoalarm:MeteoalarmDownloader",
     "imgw_meteo": "kozy_data.sources.imgw_meteo:ImgwMeteoDownloader",
     "imgw_hydro": "kozy_data.sources.imgw_hydro:ImgwHydroDownloader",
     "psp_events": "kozy_data.sources.psp_events:PspEventsDownloader",
@@ -34,12 +36,14 @@ REGISTRY: dict[str, str] = {
 # Order in which `fetch all` runs sources. OSM first to produce the boundary.
 DEFAULT_ORDER: list[str] = [
     "osm_overpass",
+    "spatial_grid",
     "open_meteo",
     "gios_air",
     "gus_bdl",
-    "imgw_warnings",
+    "meteoalarm",
     "imgw_meteo",
     "imgw_hydro",
+    "imgw_warnings",
     "psp_events",
     "sewik_accidents",
     "gugik",

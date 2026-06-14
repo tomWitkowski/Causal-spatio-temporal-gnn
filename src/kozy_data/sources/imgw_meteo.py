@@ -114,13 +114,31 @@ class ImgwMeteoDownloader(BaseDownloader):
         return rows
 
     def run(self, since=None) -> FetchResult:
-        start_year = self.date_window(since)[0].year
+        from ..config import PROCESSED_DIR
+        _parquet = PROCESSED_DIR / "imgw_meteo_daily.parquet"
         stations = {s.upper() for s in self.cfg.get("station_names",
                                                     list(STATION_COORDS))}
+        existing = None
+        if since is not None:
+            start_year = self.date_window(since)[0].year
+        elif _parquet.exists():
+            existing = pd.read_parquet(_parquet)
+            if len(existing):
+                max_ts = pd.to_datetime(existing["timestamp"], utc=True).max()
+                start_year = max(self.default_start().year, max_ts.year)
+            else:
+                start_year = self.default_start().year
+        else:
+            start_year = self.default_start().year
+
         try:
             zip_urls = self._zip_urls(start_year)
         except Exception as exc:  # noqa: BLE001
             return FetchResult(self.name, 0, note=f"archive listing failed: {exc}")
+
+        log.info("imgw_meteo: %d zip(s) from year %d for %s",
+                 len(zip_urls), start_year, sorted(stations))
+
         rows: list[dict] = []
         for url in zip_urls:
             try:
@@ -130,9 +148,12 @@ class ImgwMeteoDownloader(BaseDownloader):
                 continue
             io.save_raw_bytes(self.name, url.rsplit("/", 1)[-1], content)
             rows.extend(self._parse_zip(content, stations))
-        if not rows:
+        if not rows and existing is None:
             return FetchResult(self.name, 0, note="no rows for configured stations")
-        df = pd.DataFrame(rows).drop_duplicates(
-            subset=["timestamp", "station", "variable"])
+        df = pd.DataFrame(rows) if rows else pd.DataFrame()
+        if existing is not None and len(existing):
+            df = pd.concat([existing, df], ignore_index=True)
+        df = df.drop_duplicates(subset=["timestamp", "station", "variable"])
+        df = df.sort_values(["station", "variable", "timestamp"]).reset_index(drop=True)
         return self.emit(df, "imgw_meteo_daily", urls=zip_urls[:5],
                          note=f"klimat daily, stations={sorted(stations)}")
