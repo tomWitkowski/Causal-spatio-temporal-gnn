@@ -19,3 +19,7 @@ bbox:
 # Default temporal range for all downloaders
 date_start: "2020-01-01"
 timezone: "Europe/Warsaw"
+
+# Spatial grid of sample points covering the gmina
+spatial:
+  n_points: 50         # target number of uniform points within the boundary

@@ -1,0 +1,58 @@
+# Construction parameters for the OSM-grounded spatio-temporal graph.
+# Built by `python -m kozy_data build-graph` (see kozy_data/graph.py).
+
+nodes:
+  # Named OSM point features in these categories become graph nodes.
+  # (Add "shop" here to include the 55 named commercial receptors.)
+  categories: [amenity, building, natural]
+
+features:
+  building_density_radius_m: 250   # count of ALL buildings within this radius (urbanization)
+
+edges:
+  proximity_k: 5                   # k nearest neighbours -> proximity edges
+  proximity_max_m: 1500            # drop kNN edges longer than this
+  road_snap_m: 60                  # a node is "on" a road within this distance
+  water_snap_m: 150                # a node is "on" a stream within this distance
+
+weather:
+  # Per-node weather is IDW-interpolated from the spatial_grid points (not nearest-snap),
+  # then temperature is elevation-corrected by lapse_rate_c_per_km using node elevation.
+  lapse_rate_c_per_km: 6.5   # temperature drop per km of elevation (applied to temp_c)
+  idw_power: 2               # inverse-distance weighting exponent (1/d**power)
+  # open_meteo variable -> daily aggregation + output column.
+  daily:
+    precipitation:          {agg: sum,  col: precip_mm}
+    snowfall:               {agg: sum,  col: snow_mm}
+    wind_gusts_10m:         {agg: max,  col: wind_gust_kmh}
+    wind_speed_10m:         {agg: max,  col: wind_speed_kmh}
+    temperature_2m:         {agg: mean, col: temp_c}
+    relative_humidity_2m:   {agg: mean, col: humidity_pct}
+    surface_pressure:       {agg: min,  col: pressure_hpa}
+    soil_moisture_0_to_7cm: {agg: mean, col: soil_moist}
+
+events:
+  outage_snap_m: 150       # nodes within this of a geocoded outage street are exposed
+  flood_stream_m: 200      # during a hydro warning, nodes within this of a stream are exposed
+
+# Expert causal prior: directed influence between dynamic channels, lag in days.
+# This is where domain knowledge enters the model (see notes.md "expert opinions").
+# Targets are the unplanned-event channels; outage_failure = unplanned power failures
+# (outage_planned is a scheduled-maintenance *feature*, not a cause of failures).
+causal_edges:
+  - {src: precip_mm,    dst: flood_warn,     lag_days: 1, note: "rain -> river rise -> hydro warning"}
+  - {src: snow_mm,      dst: outage_failure, lag_days: 0, note: "wet snow loads lines"}
+  - {src: wind_gust_kmh, dst: outage_failure, lag_days: 0, note: "gusts down lines / trees"}
+  - {src: wind_gust_kmh, dst: meteo_warn,     lag_days: 0, note: "warning accompanies wind"}
+  - {src: precip_mm,    dst: meteo_warn,     lag_days: 0, note: "heavy-rain warning"}
+  - {src: flood_warn,   dst: outage_failure, lag_days: 0, note: "flooding damages the grid"}
+
+# Dataset assembly (build-dataset): two inductive snapshots — sparse train graph on past
+# dates, denser test graph (adds 'shop') on the future window.
+dataset:
+  horizon_days: 3            # forecast: target event active within the next H days
+  window_days: 14            # sliding input window length L (used by make_windows helper)
+  cutoff: "2026-05-01"      # dynamic dates < cutoff -> train, >= cutoff -> test
+  target_channels: [flood_warn, meteo_warn, rcb_alert, outage_failure]
+  train_categories: [amenity, building, natural]
+  test_categories:  [amenity, building, natural, shop]

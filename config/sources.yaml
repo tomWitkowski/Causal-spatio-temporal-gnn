@@ -1,10 +1,12 @@
 # Per-source configuration. `enabled: false` skips the source in `fetch all`.
-# tier: A = full programmatic history >=2020, B = programmatic, limited history,
-#       C = scraping / collect-from-now.
+
+spatial_grid:
+  enabled: true
+  # Overrides kozy.yaml spatial.n_points when set
+  n_points: 50
 
 open_meteo:
   enabled: true
-  tier: A
   # ERA5 reanalysis hourly variables
   hourly:
     - temperature_2m
@@ -22,29 +24,20 @@ open_meteo:
 
 gios_air:
   enabled: true
-  tier: A
-  # nearest stations resolved by distance to centroid; how many to keep
-  max_stations: 3
+  max_stations: 3        # nearest stations; GIOŚ getData is slow, keep it small
   search_radius_km: 30
 
 gus_bdl:
   enabled: true
-  tier: A
-  # BDL variable IDs available at gmina level (level 6).
-  # 72305 = ludność ogółem
-  # 60559 = gęstość zaludnienia (os/km2)
-  # 60562 = obciążenie dem. poprodukcyjni/100 produkcyjnych
-  # 60563 = obciążenie dem. nieprodukcyjni/100 produkcyjnych
-  # 60565/60566/60567 = ludność wg grup wieku (poprodukcyjny/produkcyjny/przedprodukcyjny)
-  # 60572 = przeciętna pow. użytkowa 1 mieszkania (m2)
-  # 60573 = przeciętna pow. użytkowa mieszkania na 1 osobę (m2)
+  # BDL variable IDs at gmina level (level 6):
+  # 72305=ludność ogółem, 60559=gęstość (os/km2)
+  # 60562/60563=obciążenie dem., 60565/60566/60567=grupy wieku
+  # 60572/60573=pow. użytkowa mieszkań
   variable_ids: [72305, 60559, 60562, 60563, 60565, 60566, 60567, 60572, 60573]
 
 osm_overpass:
   enabled: true
-  tier: A
   overpass_url: "https://overpass-api.de/api/interpreter"
-  # POI / feature categories to extract within the gmina boundary
   features:
     - "amenity"
     - "shop"
@@ -56,45 +49,43 @@ osm_overpass:
 
 imgw_warnings:
   enabled: true
-  tier: A
-  base_meteo: "https://danepubliczne.imgw.pl/data/arch/ost_meteo"
-  base_hydro: "https://danepubliczne.imgw.pl/data/arch/ost_hydro"
+  # IMGW hydrological warnings (TXT archive, history since 2017) + PNZH hydro
+  # forecast (live). Filtered to the upper-Vistula/Beskidy/śląskie basins of Kozy.
+  # Meteo warnings -> meteoalarm; road/meteo hazard forecasts are PDF-only (skipped).
+
+meteoalarm:
+  enabled: true
+  # IMGW-issued CAP weather warnings via Meteoalarm for powiat bielski (PL2402)
+  # No historical archive — accumulates from first run forward
 
 imgw_meteo:
   enabled: true
-  tier: A
   base: "https://danepubliczne.imgw.pl/data/dane_pomiarowo_obserwacyjne"
-  # For kind=klimat only PSZCZYNA (~18 km) exists in this region.
-  # BIELSKO-BIAŁA and ŻYWIEC require kind=synop (different archive path).
+  # PSZCZYNA (~18 km) is the only klimat station in range;
+  # BIELSKO-BIAŁA / ŻYWIEC require kind=synop
   station_names: ["PSZCZYNA"]
   kind: "klimat"   # klimat | synop | opad
 
 imgw_hydro:
-  enabled: false
-  tier: B
+  enabled: true
+  station_names: ["PODKĘPIE", "MIKUSZOWICE", "CZECHOWICE-DZIEDZICE", "CZANIEC-KOBIERNICE"]
 
 psp_events:
-  enabled: false
-  tier: B
+  enabled: true
 
 sewik_accidents:
-  enabled: false
-  tier: B
+  enabled: true
 
 gugik:
-  enabled: false
-  tier: B
+  enabled: true
+
+tauron_outages:
+  enabled: true
 
 rcb_alerts:
   enabled: true
-  tier: C
   base: "https://www.gov.pl/web/rcb"
-
-tauron_outages:
-  enabled: false
-  tier: C
 
 kozy_news:
   enabled: true
-  tier: C
   base: "https://kozy.pl/aktualnosci/"
