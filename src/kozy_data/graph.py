@@ -57,11 +57,11 @@ def _line_to_xy(geom_wkt: str, to_xy) -> LineString:
 # --------------------------------------------------------------------------- #
 # nodes + static features
 # --------------------------------------------------------------------------- #
-def _build_nodes(cfg: dict, to_xy) -> tuple[pd.DataFrame, dict]:
+def _build_nodes(cfg: dict, to_xy, categories: list | None = None) -> tuple[pd.DataFrame, dict]:
     feats = pd.read_parquet(PROCESSED_DIR / "osm_features.parquet")
     lines = pd.read_parquet(PROCESSED_DIR / "osm_lines.parquet")
 
-    cats = cfg["nodes"]["categories"]
+    cats = categories or cfg["nodes"]["categories"]
     named = feats[
         feats["category"].isin(cats)
         & feats["name"].notna()
@@ -232,8 +232,10 @@ def _build_edges(nodes: pd.DataFrame, geom: dict, cfg: dict) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # dynamic features (daily): weather + event exposure
 # --------------------------------------------------------------------------- #
-def _daily_weather(grid_pts: set, daily_cfg: dict) -> pd.DataFrame:
+def _daily_weather(grid: pd.DataFrame, daily_cfg: dict) -> pd.DataFrame:
+    """Daily-aggregated weather per grid point (keyed grid_lat/grid_lon/date)."""
     path = PROCESSED_DIR / "open_meteo_weather.parquet"
+    grid_pts = set(zip(grid["lat"], grid["lon"]))
     frames = []
     for var, spec in daily_cfg.items():
         sub = pd.read_parquet(path, columns=["timestamp", "lat", "lon", "value"],
@@ -246,6 +248,67 @@ def _daily_weather(grid_pts: set, daily_cfg: dict) -> pd.DataFrame:
         frames.append(g)
     weather = reduce(lambda a, b: a.merge(b, on=["lat", "lon", "date"], how="outer"), frames)
     return weather.rename(columns={"lat": "grid_lat", "lon": "grid_lon"})
+
+
+def _interp_weather(nodes: pd.DataFrame, geom: dict, cfg: dict,
+                    dates: pd.DatetimeIndex) -> pd.DataFrame:
+    """Interpolate the grid weather to each node (IDW) + elevation lapse-rate on temp.
+
+    Returns a (node_id, date) long frame with one column per daily feature. ERA5 is
+    ~11 km, so grid points share date coverage; per (node, date) we renormalise the
+    IDW weights over whatever grid points have data, so gaps degrade gracefully.
+    """
+    wcfg = cfg["weather"]
+    daily_cfg = wcfg["daily"]
+    feat_cols = [s["col"] for s in daily_cfg.values()]
+    to_xy = geom["to_xy"]
+
+    grid = pd.read_parquet(PROCESSED_DIR / "spatial_grid.parquet")[["lat", "lon", "elevation_m"]]
+    daily = _daily_weather(grid, daily_cfg)
+
+    # grid points that actually carry weather, in a fixed order (+ their elevation)
+    gpts = (daily[["grid_lat", "grid_lon"]].drop_duplicates()
+            .merge(grid, left_on=["grid_lat", "grid_lon"], right_on=["lat", "lon"], how="left")
+            .reset_index(drop=True))
+    grid_xy = np.array([to_xy(lo, la) for la, lo in zip(gpts["grid_lat"], gpts["grid_lon"])])
+    grid_elev = gpts["elevation_m"].to_numpy(dtype=float)
+
+    # IDW weights [N_nodes x N_grid] in projected metres (+1 m guards a coincident point)
+    node_xy = geom["node_xy"]
+    dist = np.sqrt(((node_xy[:, None, :] - grid_xy[None, :, :]) ** 2).sum(-1))
+    w = 1.0 / np.power(dist + 1.0, float(wcfg.get("idw_power", 2)))
+    W = w / w.sum(1, keepdims=True)
+
+    # per feature, pivot to [grid x date] and interpolate with NaN-aware renormalisation
+    didx = pd.DatetimeIndex(dates)
+    gindex = pd.MultiIndex.from_arrays([gpts["grid_lat"], gpts["grid_lon"]])
+    out: dict[str, np.ndarray] = {}
+    for col in feat_cols:
+        piv = (daily.pivot_table(index=["grid_lat", "grid_lon"], columns="date", values=col)
+               .reindex(index=gindex).reindex(columns=didx))
+        M = piv.to_numpy(dtype=float)                 # [G x T], may hold NaN
+        present = ~np.isnan(M)
+        num = W @ np.where(present, M, 0.0)           # [N x T]
+        den = W @ present.astype(float)
+        out[col] = np.divide(num, den, out=np.full_like(num, np.nan), where=den > 0)
+
+    # elevation lapse-rate correction on temperature (node vs IDW grid elevation)
+    temp_col = next((s["col"] for k, s in daily_cfg.items() if k == "temperature_2m"), None)
+    if temp_col is not None:
+        ge = ~np.isnan(grid_elev)
+        idw_elev = (W[:, ge] @ grid_elev[ge]) / W[:, ge].sum(1)
+        node_elev = nodes["elevation_m"].to_numpy(dtype=float)
+        lapse = float(wcfg.get("lapse_rate_c_per_km", 6.5))
+        out[temp_col] = out[temp_col] - lapse * ((node_elev - idw_elev) / 1000.0)[:, None]
+
+    T = len(didx)
+    res = pd.DataFrame({
+        "node_id": np.repeat(nodes["node_id"].to_numpy(), T),
+        "date": np.tile(didx.values, len(nodes)),
+    })
+    for col in feat_cols:
+        res[col] = np.round(out[col].reshape(-1), 3)
+    return res
 
 
 def _active_level_by_date(starts, ends, levels) -> dict[dt.date, float]:
@@ -270,13 +333,12 @@ def _build_dynamic(nodes: pd.DataFrame, geom: dict, cfg: dict, start: dt.date) -
         "node_id": np.repeat(nodes["node_id"].values, len(dates)),
         "date": np.tile(dates.values, n_nodes),
     })
-    dyn = dyn.merge(nodes[["node_id", "grid_lat", "grid_lon",
-                           "dist_to_stream_m", "lat", "lon"]], on="node_id", how="left")
+    dyn = dyn.merge(nodes[["node_id", "dist_to_stream_m", "lat", "lon"]],
+                    on="node_id", how="left")
 
-    # weather from nearest grid point
-    grid_pts = set(zip(nodes["grid_lat"], nodes["grid_lon"]))
-    weather = _daily_weather(grid_pts, cfg["weather"]["daily"])
-    dyn = dyn.merge(weather, on=["grid_lat", "grid_lon", "date"], how="left")
+    # weather: IDW-interpolated to each node + temperature lapse-rate correction
+    weather = _interp_weather(nodes, geom, cfg, dates)
+    dyn = dyn.merge(weather, on=["node_id", "date"], how="left")
 
     # --- hydro (flood) warnings: gated by stream proximity ---
     flood = {}
@@ -315,8 +377,10 @@ def _build_dynamic(nodes: pd.DataFrame, geom: dict, cfg: dict, start: dt.date) -
         rcb_dates = set(pd.to_datetime(r["timestamp"], utc=True).dt.date)
     dyn["rcb_alert"] = date_d.map(lambda d: 1.0 if d in rcb_dates else 0.0)
 
-    # --- outages: projected onto nodes near the affected streets' line geometry ---
-    dyn["outage"] = 0.0
+    # --- outages: projected onto nodes near the affected streets' line geometry.
+    #     Planned outages are an explanatory feature; unplanned failures are the target.
+    dyn["outage_planned"] = 0.0
+    dyn["outage_failure"] = 0.0
     tp = PROCESSED_DIR / "tauron_outages.parquet"
     if tp.exists():
         to_xy = geom["to_xy"]
@@ -333,20 +397,25 @@ def _build_dynamic(nodes: pd.DataFrame, geom: dict, cfg: dict, start: dt.date) -
         ids = nodes["node_id"].tolist()
         pos = {(nid, d): k for k, (nid, d) in enumerate(zip(dyn["node_id"], date_d))}
         t = pd.read_parquet(tp)
-        flags = np.zeros(len(dyn))
-        for ts, title in zip(pd.to_datetime(t["timestamp"], utc=True), t["title"].fillna("")):
+        planned = np.zeros(len(dyn))
+        failure = np.zeros(len(dyn))
+        for ts, title, cat in zip(pd.to_datetime(t["timestamp"], utc=True),
+                                  t["title"].fillna(""), t["category"]):
             d = ts.date()
             names = {m["street"] for m in geocode.match_streets(title)}
             geoms = [g for nm in names for g in street_lines.get(nm, [])]
             if not geoms:
                 continue
+            flags = failure if cat == "failure" else planned
             for i, p in enumerate(node_pts):
                 if (ids[i], d) in pos and min(p.distance(g) for g in geoms) <= snap:
                     flags[pos[(ids[i], d)]] = 1.0
-        dyn["outage"] = flags
+        dyn["outage_planned"] = planned
+        dyn["outage_failure"] = failure
 
     feat_cols = ([s["col"] for s in cfg["weather"]["daily"].values()]
-                 + ["flood_warn", "meteo_warn", "rcb_alert", "outage"])
+                 + ["flood_warn", "meteo_warn", "rcb_alert",
+                    "outage_planned", "outage_failure"])
     out = dyn[["node_id", "date"] + feat_cols].copy()
     return out, feat_cols
 
@@ -354,14 +423,15 @@ def _build_dynamic(nodes: pd.DataFrame, geom: dict, cfg: dict, start: dt.date) -
 # --------------------------------------------------------------------------- #
 # orchestration
 # --------------------------------------------------------------------------- #
-def build(since: str | None = None) -> dict[str, Any]:
+def build(since: str | None = None, categories: list | None = None,
+          out_prefix: str = "") -> dict[str, Any]:
     aoi = load_aoi()
     cfg = _load_yaml(CONFIG_DIR / "graph.yaml")
     to_xy = _projector(aoi.centroid_lat, aoi.centroid_lon)
     start = dt.date.fromisoformat(since) if since else aoi.start_date
 
     log.info("graph: building nodes …")
-    nodes, geom = _build_nodes(cfg, to_xy)
+    nodes, geom = _build_nodes(cfg, to_xy, categories)
     log.info("graph: %d nodes (%s)", len(nodes), nodes["category"].value_counts().to_dict())
 
     log.info("graph: building edges …")
@@ -370,18 +440,19 @@ def build(since: str | None = None) -> dict[str, Any]:
 
     log.info("graph: building dynamic features from %s …", start)
     dynamic, feat_cols = _build_dynamic(nodes, geom, cfg, start)
-    log.info("graph: dynamic rows=%d active(outage=%d flood=%d meteo=%d rcb=%d)",
-             len(dynamic), int((dynamic.outage > 0).sum()), int((dynamic.flood_warn > 0).sum()),
+    log.info("graph: dynamic rows=%d active(fail=%d planned=%d flood=%d meteo=%d rcb=%d)",
+             len(dynamic), int((dynamic.outage_failure > 0).sum()),
+             int((dynamic.outage_planned > 0).sum()), int((dynamic.flood_warn > 0).sum()),
              int((dynamic.meteo_warn > 0).sum()), int((dynamic.rcb_alert > 0).sum()))
 
-    io.save_table(nodes, "graph_nodes")
-    io.save_table(edges, "graph_edges")
-    io.save_table(dynamic, "graph_dynamic")
+    io.save_table(nodes, f"{out_prefix}graph_nodes")
+    io.save_table(edges, f"{out_prefix}graph_edges")
+    io.save_table(dynamic, f"{out_prefix}graph_dynamic")
 
     spec = {
         "crs": "local equirectangular metres (origin = gmina centroid)",
         "n_nodes": len(nodes),
-        "node_categories": cfg["nodes"]["categories"],
+        "node_categories": categories or cfg["nodes"]["categories"],
         "static_features": ["elevation_m", "dist_to_stream_m", "dist_to_road_m",
                             "height_above_stream_m", "building_density"],
         "dynamic_features": feat_cols,
@@ -392,7 +463,7 @@ def build(since: str | None = None) -> dict[str, Any]:
         "causal_edges": cfg["causal_edges"],
         "params": {k: cfg[k] for k in ("features", "edges", "events")},
     }
-    spec_path = PROCESSED_DIR / "graph_spec.json"
+    spec_path = PROCESSED_DIR / f"{out_prefix}graph_spec.json"
     spec_path.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
     log.info("graph: wrote %s", spec_path.name)
     return spec

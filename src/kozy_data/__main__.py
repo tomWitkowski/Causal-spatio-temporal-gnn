@@ -55,6 +55,17 @@ def cmd_build_graph(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_build_dataset(args: argparse.Namespace) -> int:
+    from .dataset import build_dataset
+
+    spec = build_dataset(cutoff=args.cutoff, horizon=args.horizon)
+    print(f"  OK  dataset: cutoff={spec['cutoff']} H={spec['horizon_days']}d | "
+          f"train {spec['train']['X_shape']} test {spec['test']['X_shape']}")
+    print(f"      positives/channel  train={spec['train']['positives_per_channel']}")
+    print(f"                         test ={spec['test']['positives_per_channel']}")
+    return 0
+
+
 def cmd_fetch(args: argparse.Namespace) -> int:
     if args.source == "all":
         targets = [n for n in DEFAULT_ORDER if _enabled(n)]
@@ -86,6 +97,14 @@ def main(argv: list[str] | None = None) -> int:
     p_graph.add_argument("--since", default=None,
                          help="dynamic-feature start date (default: config date_start)")
     p_graph.set_defaults(func=cmd_build_graph)
+
+    p_ds = sub.add_parser("build-dataset",
+                          help="assemble train/test dataset bundles from the graph")
+    p_ds.add_argument("--cutoff", default=None,
+                      help="train/test split date (default: config dataset.cutoff)")
+    p_ds.add_argument("--horizon", type=int, default=None,
+                      help="forecast horizon in days (default: config dataset.horizon_days)")
+    p_ds.set_defaults(func=cmd_build_dataset)
 
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)
